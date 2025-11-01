@@ -1,0 +1,23 @@
+# Database files
+*_db/
+demo_db/
+nosqlite_db/
+*.json
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
