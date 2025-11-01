@@ -72,6 +72,525 @@ users.update(
 users.delete({ email: 'john@example.com' });
 ```
 
+## Usage with Next.js
+
+NoSQLite works great with Next.js! Since it uses Node.js file system, you can use it in:
+- **API Routes** (Pages Router)
+- **Route Handlers** (App Router)
+- **Server Components** (App Router)
+- **Server Actions** (App Router)
+
+### Next.js Pages Router (API Routes)
+
+#### Setup
+
+Create a database instance that can be reused:
+
+```javascript
+// lib/db.js
+const NoSQLite = require('nosqlite-db');
+const path = require('path');
+
+const dbPath = path.join(process.cwd(), 'data', 'database');
+const db = new NoSQLite(dbPath);
+
+// Initialize collections and indexes
+const users = db.collection('users');
+users.createUniqueIndex('email');
+
+module.exports = { db, users };
+```
+
+#### API Route Example
+
+```javascript
+// pages/api/users/index.js
+import { users } from '../../../lib/db';
+
+export default function handler(req, res) {
+  if (req.method === 'GET') {
+    // Get query parameters for filtering
+    const { age, limit = 20, page = 1 } = req.query;
+    
+    const query = age ? { age: { $gte: parseInt(age) } } : {};
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const results = users.find(query, {
+      sort: { _createdAt: -1 },
+      limit: parseInt(limit),
+      skip: skip
+    });
+    
+    return res.status(200).json({
+      users: results,
+      count: results.length,
+      page: parseInt(page)
+    });
+  }
+  
+  if (req.method === 'POST') {
+    try {
+      const user = users.insert({
+        ...req.body,
+        createdAt: new Date().toISOString()
+      });
+      
+      return res.status(201).json(user);
+    } catch (error) {
+      if (error.message.includes('must be unique')) {
+        return res.status(409).json({ error: 'Email already exists' });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+  }
+  
+  res.setHeader('Allow', ['GET', 'POST']);
+  return res.status(405).end(`Method ${req.method} Not Allowed`);
+}
+```
+
+#### Single User API Route
+
+```javascript
+// pages/api/users/[id].js
+import { users } from '../../../lib/db';
+
+export default function handler(req, res) {
+  const { id } = req.query;
+  
+  if (req.method === 'GET') {
+    const user = users.findOne({ _id: id });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    return res.status(200).json(user);
+  }
+  
+  if (req.method === 'PUT') {
+    try {
+      const result = users.update(
+        { _id: id },
+        { $set: req.body }
+      );
+      
+      if (result.modifiedCount === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      const updatedUser = users.findOne({ _id: id });
+      return res.status(200).json(updatedUser);
+    } catch (error) {
+      if (error.message.includes('must be unique')) {
+        return res.status(409).json({ error: 'Duplicate key error' });
+      }
+      return res.status(500).json({ error: error.message });
+    }
+  }
+  
+  if (req.method === 'DELETE') {
+    const result = users.delete({ _id: id });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    return res.status(200).json({ message: 'User deleted successfully' });
+  }
+  
+  res.setHeader('Allow', ['GET', 'PUT', 'DELETE']);
+  return res.status(405).end(`Method ${req.method} Not Allowed`);
+}
+```
+
+### Next.js App Router (Route Handlers)
+
+#### Setup
+
+```javascript
+// lib/db.js (same as above)
+const NoSQLite = require('nosqlite-db');
+const path = require('path');
+
+const dbPath = path.join(process.cwd(), 'data', 'database');
+const db = new NoSQLite(dbPath);
+
+const users = db.collection('users');
+users.createUniqueIndex('email');
+
+export { db, users };
+```
+
+#### Route Handler Example
+
+```javascript
+// app/api/users/route.js
+import { NextResponse } from 'next/server';
+import { users } from '@/lib/db';
+
+export async function GET(request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const age = searchParams.get('age');
+    const limit = parseInt(searchParams.get('limit') || '20');
+    const page = parseInt(searchParams.get('page') || '1');
+    
+    const query = age ? { age: { $gte: parseInt(age) } } : {};
+    const skip = (page - 1) * limit;
+    
+    const results = users.find(query, {
+      sort: { _createdAt: -1 },
+      limit: limit,
+      skip: skip
+    });
+    
+    return NextResponse.json({
+      users: results,
+      count: results.length,
+      page: page
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request) {
+  try {
+    const body = await request.json();
+    
+    const user = users.insert({
+      ...body,
+      createdAt: new Date().toISOString()
+    });
+    
+    return NextResponse.json(user, { status: 201 });
+  } catch (error) {
+    if (error.message.includes('must be unique')) {
+      return NextResponse.json(
+        { error: 'Email already exists' },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json(
+      { error: error.message },
+      { status: 500 }
+    );
+  }
+}
+```
+
+#### Dynamic Route Handler
+
+```javascript
+// app/api/users/[id]/route.js
+import { NextResponse } from 'next/server';
+import { users } from '@/lib/db';
+
+export async function GET(request, { params }) {
+  try {
+    const { id } = params;
+    const user = users.findOne({ _id: id });
+    
+    if (!user) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      );
+    }
+    
+    return NextResponse.json(user);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PUT(request, { params }) {
+  try {
+    const { id } = params;
+    const body = await request.json();
+    
+    const result = users.update(
+      { _id: id },
+      { $set: body }
+    );
+    
+    if (result.modifiedCount === 0) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      );
+    }
+    
+    const updatedUser = users.findOne({ _id: id });
+    return NextResponse.json(updatedUser);
+  } catch (error) {
+    if (error.message.includes('must be unique')) {
+      return NextResponse.json(
+        { error: 'Duplicate key error' },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json(
+      { error: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request, { params }) {
+  try {
+    const { id } = params;
+    const result = users.delete({ _id: id });
+    
+    if (result.deletedCount === 0) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      );
+    }
+    
+    return NextResponse.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: 500 }
+    );
+  }
+}
+```
+
+### Using in React Components (Frontend)
+
+```javascript
+// app/users/page.jsx or components/UserList.jsx
+'use client';
+
+import { useEffect, useState } from 'react';
+
+export default function UsersPage() {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+  
+  const fetchUsers = async () => {
+    try {
+      const response = await fetch('/api/users');
+      const data = await response.json();
+      setUsers(data.users);
+    } catch (error) {
+      console.error('Error fetching users:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const handleCreateUser = async (userData) => {
+    try {
+      const response = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userData)
+      });
+      
+      if (response.ok) {
+        const newUser = await response.json();
+        setUsers([...users, newUser]);
+      } else {
+        const error = await response.json();
+        alert(error.error);
+      }
+    } catch (error) {
+      console.error('Error creating user:', error);
+    }
+  };
+  
+  if (loading) return <div>Loading...</div>;
+  
+  return (
+    <div>
+      <h1>Users</h1>
+      <button onClick={() => handleCreateUser({ name: 'John', email: 'john@example.com' })}>
+        Add User
+      </button>
+      <ul>
+        {users.map(user => (
+          <li key={user._id}>
+            {user.name} - {user.email}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+### Server Components (App Router)
+
+```javascript
+// app/users/page.jsx (Server Component)
+import { users } from '@/lib/db';
+
+export default async function UsersPage() {
+  // Direct database access in Server Component
+  const allUsers = users.find({}, {
+    sort: { _createdAt: -1 },
+    limit: 20
+  });
+  
+  return (
+    <div>
+      <h1>Users ({allUsers.length})</h1>
+      <ul>
+        {allUsers.map(user => (
+          <li key={user._id}>
+            {user.name} - {user.email}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+### Server Actions (App Router)
+
+```javascript
+// app/actions/userActions.js
+'use server';
+
+import { users } from '@/lib/db';
+
+export async function createUser(formData) {
+  try {
+    const user = users.insert({
+      name: formData.get('name'),
+      email: formData.get('email'),
+      age: parseInt(formData.get('age')),
+      createdAt: new Date().toISOString()
+    });
+    
+    return { success: true, user };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+export async function getUserById(id) {
+  const user = users.findOne({ _id: id });
+  return user || null;
+}
+
+export async function updateUser(id, data) {
+  try {
+    const result = users.update(
+      { _id: id },
+      { $set: data }
+    );
+    
+    return { success: result.modifiedCount > 0 };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+```
+
+### Complete Next.js Example
+
+```javascript
+// lib/db.js - Database setup
+const NoSQLite = require('nosqlite-db');
+const path = require('path');
+
+const dbPath = path.join(process.cwd(), 'data', 'database');
+const db = new NoSQLite(dbPath);
+
+// Collections
+const users = db.collection('users');
+const posts = db.collection('posts');
+
+// Indexes
+users.createUniqueIndex('email');
+posts.createIndex('authorId');
+posts.createIndex('createdAt');
+
+// Graceful shutdown
+if (process.env.NODE_ENV !== 'production') {
+  process.on('SIGINT', () => {
+    db.close();
+    process.exit(0);
+  });
+}
+
+export { db, users, posts };
+```
+
+```javascript
+// app/api/users/route.js - API Route
+import { NextResponse } from 'next/server';
+import { users } from '@/lib/db';
+
+export async function GET(request) {
+  const { searchParams } = new URL(request.url);
+  const page = parseInt(searchParams.get('page') || '1');
+  const limit = parseInt(searchParams.get('limit') || '20');
+  
+  const results = users.find({}, {
+    sort: { _createdAt: -1 },
+    limit: limit,
+    skip: (page - 1) * limit
+  });
+  
+  return NextResponse.json({ users: results, page, limit });
+}
+
+export async function POST(request) {
+  try {
+    const body = await request.json();
+    const user = users.insert({
+      ...body,
+      createdAt: new Date().toISOString()
+    });
+    return NextResponse.json(user, { status: 201 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: error.message.includes('unique') ? 409 : 500 }
+    );
+  }
+}
+```
+
+### Important Notes for Next.js
+
+1. **Database Location**: Use `process.cwd()` to ensure correct paths in Next.js:
+   ```javascript
+   const dbPath = path.join(process.cwd(), 'data', 'database');
+   ```
+
+2. **Database Initialization**: Initialize collections and indexes in your `lib/db.js` file that gets imported once.
+
+3. **Error Handling**: Always wrap database operations in try-catch blocks.
+
+4. **Data Directory**: Add `data/` to `.gitignore`:
+   ```
+   # .gitignore
+   data/
+   .next/
+   node_modules/
+   ```
+
+5. **Production Considerations**: In production, ensure the `data/` directory has proper write permissions.
+
 ## API Reference
 
 ### Database
